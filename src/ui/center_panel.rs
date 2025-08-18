@@ -117,17 +117,83 @@ impl EguiCodeGeneratorApp {
     
     pub fn render_code_editor(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
-            ui.label("Code Editor");
+            ui.horizontal(|ui| {
+                ui.label("Code Editor");
+                ui.separator();
+                if let Some(project_name) = self.project_manager.get_project_name() {
+                    ui.label(format!("Project: {}", project_name));
+                }
+            });
             ui.separator();
             
-            // Fill the available space with the text editor
-            let available_rect = ui.available_rect_before_wrap();
-            ui.add_sized(
-                [available_rect.width(), available_rect.height()],
-                egui::TextEdit::multiline(&mut self.code_content)
-                    .font(egui::TextStyle::Monospace)
-            );
+            // Create a horizontal layout for line numbers and code
+            ui.horizontal_top(|ui| {
+                let available_rect = ui.available_rect_before_wrap();
+                let line_number_width = 50.0;
+                let code_width = available_rect.width() - line_number_width - 10.0;
+                
+                // Line numbers
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(line_number_width, available_rect.height()),
+                    egui::Layout::top_down(egui::Align::RIGHT),
+                    |ui| {
+                        ui.style_mut().visuals.extreme_bg_color = egui::Color32::from_gray(30);
+                        
+                        egui::ScrollArea::vertical()
+                            .id_source("line_numbers")
+                            .show(ui, |ui| {
+                                let line_count = self.code_content.lines().count().max(1);
+                                for i in 1..=line_count {
+                                    ui.label(
+                                        egui::RichText::new(format!("{:3}", i))
+                                            .font(egui::FontId::monospace(12.0))
+                                            .color(egui::Color32::from_gray(150))
+                                    );
+                                }
+                            });
+                    },
+                );
+                
+                ui.separator();
+                
+                // Code editor with syntax highlighting
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(code_width, available_rect.height()),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        // Check if we should show syntax highlighting
+                        let show_highlighting = self.code_content.len() < 10000; // Limit for performance
+                        
+                        if show_highlighting {
+                            self.render_highlighted_code_editor(ui);
+                        } else {
+                            // Fallback to simple text editor for large files
+                            ui.add_sized(
+                                [ui.available_width(), ui.available_height()],
+                                egui::TextEdit::multiline(&mut self.code_content)
+                                    .font(egui::TextStyle::Monospace)
+                            );
+                        }
+                    },
+                );
+            });
         });
+    }
+    
+    fn render_highlighted_code_editor(&mut self, ui: &mut egui::Ui) {
+        use crate::ui::syntax_highlighting::highlight_python_simple;
+        
+        // For now, we'll use a simple approach with a text editor
+        // In a more advanced implementation, you'd render highlighted text directly
+        ui.add_sized(
+            [ui.available_width(), ui.available_height()],
+            egui::TextEdit::multiline(&mut self.code_content)
+                .font(egui::FontId::monospace(12.0))
+                .desired_width(f32::INFINITY)
+        );
+        
+        // TODO: Implement proper syntax highlighting rendering
+        // This would require custom text rendering with colored segments
     }
     
     pub fn render_node_editor(&mut self, ui: &mut egui::Ui) {

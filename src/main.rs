@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 mod ui;
+mod project;
+
+use project::ProjectManager;
+use ui::syntax_highlighting::SyntaxHighlighter;
 
 #[derive(Deserialize, Debug)]
 struct UiText {
@@ -123,6 +127,10 @@ pub struct NodeGraph {
 // Main application state
 pub struct EguiCodeGeneratorApp {
     localization: LocalizationData,
+    // Project management
+    project_manager: ProjectManager,
+    // Syntax highlighting
+    syntax_highlighter: SyntaxHighlighter,
     // UI state
     selected_node: Option<String>,
     node_tree: Vec<UiNode>,
@@ -196,22 +204,13 @@ impl Default for EguiCodeGeneratorApp {
             properties: HashMap::from([("text".to_string(), "Click Me".to_string())]),
         });
         
-        let file_system_tree = vec![
-            FileSystemEntry::Dir {
-                name: "src".to_string(),
-                children: vec![
-                    FileSystemEntry::File { name: "main.rs".to_string() },
-                ],
-            },
-            FileSystemEntry::Dir {
-                name: "assets".to_string(),
-                children: vec![],
-            },
-            FileSystemEntry::File { name: "Cargo.toml".to_string() },
-        ];
+        let project_manager = ProjectManager::default();
+        let file_system_tree = project_manager.get_file_system_tree();
 
         Self {
             localization,
+            project_manager,
+            syntax_highlighter: SyntaxHighlighter::default(),
             selected_node: None,
             node_tree: vec![root_node],
             file_system_tree,
@@ -369,6 +368,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Egui Code Generator",
         options,
-        Box::new(|_cc| Box::<EguiCodeGeneratorApp>::default()),
+        Box::new(|_cc| Ok(Box::<EguiCodeGeneratorApp>::default())),
     )
 }

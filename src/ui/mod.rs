@@ -11,3 +11,4 @@ pub mod left_panel;
 pub mod right_panel;
 pub mod center_panel;
 pub mod layout;
+pub mod syntax_highlighting;

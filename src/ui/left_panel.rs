@@ -71,18 +71,30 @@ impl EguiCodeGeneratorApp {
     }
 
     pub fn render_file_system(&mut self, ui: &mut egui::Ui) {
-        Self::render_file_system_entries(ui, &self.file_system_tree);
+        Self::render_file_system_entries(ui, &self.file_system_tree.clone(), self);
     }
 
-    pub(crate) fn render_file_system_entries(ui: &mut egui::Ui, entries: &[FileSystemEntry]) {
+    pub(crate) fn render_file_system_entries(ui: &mut egui::Ui, entries: &[FileSystemEntry], app: &mut EguiCodeGeneratorApp) {
         for entry in entries {
             match entry {
                 FileSystemEntry::File { name } => {
-                    if ui.selectable_label(false, format!("📄 {}", name)).clicked() {}
+                    let icon = if name.ends_with(".py") {
+                        "🐍"
+                    } else if name.ends_with(".json") {
+                        "📋"
+                    } else if name.ends_with(".md") {
+                        "📝"
+                    } else {
+                        "📄"
+                    };
+                    
+                    if ui.selectable_label(false, format!("{} {}", icon, name)).clicked() {
+                        app.handle_file_click(name);
+                    }
                 }
                 FileSystemEntry::Dir { name, children } => {
                     ui.collapsing(format!("📁 {}", name), |ui| {
-                        Self::render_file_system_entries(ui, children);
+                        Self::render_file_system_entries(ui, children, app);
                     });
                 }
             }
@@ -100,6 +112,28 @@ impl EguiCodeGeneratorApp {
                 ui.indent(&node.id, |ui| {
                     Self::render_node_tree(ui, selected_node, &node.children);
                 });
+            }
+        }
+    }
+    
+    pub fn handle_file_click(&mut self, file_name: &str) {
+        // Switch to code editor tab when a file is clicked
+        self.current_tab = crate::EditorTab::CodeEditor;
+        
+        // Try to load file content if it's a text file
+        if let Some(project_path) = &self.project_manager.current_project_path {
+            let file_path = project_path.join(file_name);
+            
+            if file_path.exists() && file_path.is_file() {
+                match std::fs::read_to_string(&file_path) {
+                    Ok(content) => {
+                        self.code_content = content;
+                        self.console_messages.push(format!("Opened file: {}", file_name));
+                    }
+                    Err(e) => {
+                        self.console_messages.push(format!("Failed to open file {}: {}", file_name, e));
+                    }
+                }
             }
         }
     }
