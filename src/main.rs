@@ -1,34 +1,51 @@
 use eframe::egui;
 use std::collections::HashMap;
 use serde::Deserialize;
+use std::io::Write;
+use zip::write::FileOptions;
 
 mod ui;
 mod project;
+mod filesystem;
+mod window_editor;
 
+// Import project management types
 use project::ProjectManager;
-use ui::syntax_highlighting::SyntaxHighlighter;
+use crate::filesystem::{FileSystemService, FileSystemEntry as ProjectFileSystemEntry};
 
 #[derive(Deserialize, Debug)]
 struct UiText {
-    #[allow(dead_code)]
-    main_window_title: String,
+
     file_menu: String,
     edit_menu: String,
     view_menu: String,
     help_menu: String,
-    #[allow(dead_code)]
-    widget_palette_title: String,
+
     properties_panel_title: String,
-    #[allow(dead_code)]
-    code_preview_title: String,
-    #[allow(dead_code)]
-    generate_button: String,
+
+
     save_button: String,
-    load_button: String,
-    #[allow(dead_code)]
-    clear_button: String,
+
+
     node_tree_title: String,
     file_system_title: String,
+    #[allow(dead_code)]
+    new_button: String,
+    #[allow(dead_code)]
+    open_button: String,
+    #[allow(dead_code)]
+    save_as_button: String,
+    #[allow(dead_code)]
+    export_button: String,
+    #[allow(dead_code)]
+    exit_button: String,
+    copy_button: String,
+    duplicate_button: String,
+    cut_button: String,
+    paste_button: String,
+    delete_button: String,
+    rename_button: String,
+    properties_button: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -46,11 +63,7 @@ struct UiNode {
     properties: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
-enum FileSystemEntry {
-    File { name: String },
-    Dir { name: String, children: Vec<FileSystemEntry> },
-}
+
 
 // Editor tab types
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +71,13 @@ enum EditorTab {
     WindowEditor,
     CodeEditor,
     NodeEditor,
+}
+
+// Clipboard operation types
+#[derive(Debug, Clone, PartialEq)]
+enum ClipboardOperation {
+    Copy,
+    Cut,
 }
 
 // Node graph structures for visual programming
@@ -127,14 +147,10 @@ pub struct NodeGraph {
 // Main application state
 pub struct EguiCodeGeneratorApp {
     localization: LocalizationData,
-    // Project management
-    project_manager: ProjectManager,
-    // Syntax highlighting
-    syntax_highlighter: SyntaxHighlighter,
     // UI state
     selected_node: Option<String>,
     node_tree: Vec<UiNode>,
-    file_system_tree: Vec<FileSystemEntry>,
+    file_system_tree: Vec<ProjectFileSystemEntry>,
     current_tab: EditorTab,
     console_messages: Vec<String>,
     // Panels visibility
@@ -144,6 +160,20 @@ pub struct EguiCodeGeneratorApp {
     show_console: bool,
     // Editor content
     code_content: String,
+    current_file_path: Option<std::path::PathBuf>,
+    // Window editor content
+    current_window_document: Option<window_editor::WindowDocument>,
+    current_window_file_path: Option<std::path::PathBuf>,
+    window_editor_selected_node: Option<String>,
+    // Widget library dialog
+    show_widget_library: bool,
+    widget_library: window_editor::widget_library::WidgetLibrary,
+    // Node operations for window editor
+    node_operations: window_editor::node_operations::NodeOperations,
+    // Node tree context menu
+    show_node_context_menu: bool,
+    node_context_menu_pos: egui::Pos2,
+    node_context_menu_target: Option<String>,
     // Node graph for visual programming
     node_graph: NodeGraph,
     // Panel size ratios for draggable separators
@@ -177,6 +207,31 @@ pub struct EguiCodeGeneratorApp {
     window_editor_is_panning: bool,
     window_editor_pan_start_pos: Option<egui::Pos2>,
     window_editor_pan_start_offset: Option<egui::Vec2>,
+    
+    // Project management
+    project_manager: ProjectManager,
+    #[allow(dead_code)]
+    file_system_service: FileSystemService,
+    
+    // File system context menu
+    show_context_menu: bool,
+    context_menu_pos: egui::Pos2,
+    context_menu_target: Option<std::path::PathBuf>,
+    selected_files: Vec<std::path::PathBuf>,
+    
+    // File operations clipboard
+    clipboard_operation: Option<ClipboardOperation>,
+    clipboard_files: Vec<std::path::PathBuf>,
+    
+    // File operation dialogs
+    delete_dialog: Option<ui::dialogs::DeleteDialog>,
+    properties_dialog: Option<ui::dialogs::PropertiesDialog>,
+    
+    // Inline rename state
+    inline_rename_target: Option<std::path::PathBuf>,
+    inline_rename_text: String,
+    inline_rename_error: Option<String>,
+    inline_rename_cursor_pos: Option<usize>,
 }
 
 impl Default for EguiCodeGeneratorApp {
@@ -204,13 +259,12 @@ impl Default for EguiCodeGeneratorApp {
             properties: HashMap::from([("text".to_string(), "Click Me".to_string())]),
         });
         
-        let project_manager = ProjectManager::default();
-        let file_system_tree = project_manager.get_file_system_tree();
+        // Initialize with empty file system tree
+        // Will be populated when a project is loaded
+        let file_system_tree: Vec<ProjectFileSystemEntry> = Vec::new();
 
         Self {
             localization,
-            project_manager,
-            syntax_highlighter: SyntaxHighlighter::default(),
             selected_node: None,
             node_tree: vec![root_node],
             file_system_tree,
@@ -221,6 +275,20 @@ impl Default for EguiCodeGeneratorApp {
             show_properties: true,
             show_console: true,
             code_content: "// Generated Egui Code\nuse eframe::egui;\n\nfn main() {\n    // Your generated code here\n}".to_string(),
+            current_file_path: None,
+            // Initialize window editor state
+            current_window_document: None,
+            current_window_file_path: None,
+            window_editor_selected_node: None,
+            // Initialize widget library
+            show_widget_library: false,
+            widget_library: window_editor::widget_library::WidgetLibrary::new(),
+            // Initialize node operations
+            node_operations: window_editor::node_operations::NodeOperations::new(),
+            // Initialize node context menu
+            show_node_context_menu: false,
+            node_context_menu_pos: egui::Pos2::ZERO,
+            node_context_menu_target: None,
             // Initialize node graph with sample nodes
             node_graph: NodeGraph {
                 nodes: vec![
@@ -337,6 +405,30 @@ impl Default for EguiCodeGeneratorApp {
             window_editor_is_panning: false,
             window_editor_pan_start_pos: None,
             window_editor_pan_start_offset: None,
+            
+            // Initialize project management
+            project_manager: ProjectManager::new(),
+            file_system_service: FileSystemService::new(),
+            
+            // Initialize file system context menu
+            show_context_menu: false,
+            context_menu_pos: egui::Pos2::ZERO,
+            context_menu_target: None,
+            selected_files: Vec::new(),
+            
+            // Initialize file operations clipboard
+            clipboard_operation: None,
+            clipboard_files: Vec::new(),
+            
+            // Initialize file operation dialogs
+            delete_dialog: None,
+            properties_dialog: None,
+            
+            // Initialize inline rename state
+            inline_rename_target: None,
+            inline_rename_text: String::new(),
+            inline_rename_error: None,
+            inline_rename_cursor_pos: None,
         }
     }
 }
@@ -344,15 +436,233 @@ impl Default for EguiCodeGeneratorApp {
 impl EguiCodeGeneratorApp {
     // UI rendering methods are now in separate modules
     
-
+    // Global keyboard event handler
+    fn handle_global_keyboard_events(&mut self, ctx: &egui::Context) {
+        // Handle Delete key for file deletion
+        if ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
+            // Only handle delete if we have selected files and no dialog is open
+            if !self.selected_files.is_empty() && self.delete_dialog.is_none() {
+                // Create delete dialog directly here since we can't call left_panel method
+                let items_to_delete = self.selected_files.clone();
+                self.delete_dialog = Some(ui::dialogs::delete_dialog::DeleteDialog::new(items_to_delete));
+            }
+        }
+    }
     
-
+    // Handle file operation dialogs
+    fn handle_dialogs(&mut self, ctx: &egui::Context) {
+        use crate::ui::dialogs::{Dialog, DialogResult};
+        use crate::ui::file_operations::FileOperations;
+        
+        // Handle delete dialog
+        if self.delete_dialog.is_some() {
+            self.console_messages.push("DeleteDialog exists, processing...".to_string());
+        }
+        
+        if let Some(mut dialog) = self.delete_dialog.take() {
+            self.console_messages.push("Delete dialog is being processed".to_string());
+            match dialog.show(ctx) {
+                DialogResult::Confirmed => {
+                    self.console_messages.push("Delete operation confirmed by user".to_string());
+                    let items = dialog.get_items().to_vec();
+                    let mut success_count = 0;
+                    let mut error_count = 0;
+                    
+                    self.console_messages.push(format!("Starting deletion of {} item(s)", items.len()));
+                    
+                    for item in &items {
+                        let item_name = item.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown");
+                        self.console_messages.push(format!("Attempting to delete: {}", item.display()));
+                        
+                        match FileOperations::delete(item) {
+                            Ok(()) => {
+                                success_count += 1;
+                                self.console_messages.push(format!("Successfully deleted: {}", item_name));
+                            }
+                            Err(e) => {
+                                error_count += 1;
+                                self.console_messages.push(format!("Failed to delete {}: {}", item_name, e));
+                            }
+                        }
+                    }
+                    
+                    if success_count > 0 {
+                        self.console_messages.push(format!("Total deleted: {} item(s)", success_count));
+                    }
+                    
+                    if error_count > 0 {
+                        self.console_messages.push(format!("Total failed: {} deletion(s)", error_count));
+                    }
+                    
+                    // Clear selection
+                    self.selected_files.clear();
+                    self.console_messages.push("Refreshing file system after deletion".to_string());
+                    self.load_project_files();
+                }
+                DialogResult::Open => {
+                    self.console_messages.push("Delete dialog remains open".to_string());
+                    self.delete_dialog = Some(dialog);
+                }
+                DialogResult::Cancelled => {
+                    self.console_messages.push("Delete operation cancelled by user".to_string());
+                }
+                DialogResult::Ok | DialogResult::None => {
+                    // Handle other dialog results
+                }
+            }
+        }
+        
+        // Handle properties dialog
+        if let Some(mut dialog) = self.properties_dialog.take() {
+            match dialog.show(ctx) {
+                DialogResult::Open => {
+                    self.properties_dialog = Some(dialog);
+                }
+                _ => {
+                    // Dialog closed, do nothing
+                }
+            }
+        }
+    }
     
-
+    // File menu handlers
+    fn handle_new_project(&mut self) {
+        // Show new project dialog
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Create New Project")
+            .pick_folder() {
+            let project_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("NewProject")
+                .to_string();
+            
+            match self.project_manager.create_project(path.clone(), project_name.clone()) {
+                Ok(_) => {
+                    self.console_messages.push(format!("Created new project: {}", project_name));
+                    self.load_project_files();
+                },
+                Err(e) => {
+                    self.console_messages.push(format!("Failed to create project: {}", e));
+                }
+            }
+        }
+    }
+    
+    fn handle_open_project(&mut self) {
+        // Show open project dialog - directly select project folder
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Open Project Folder")
+            .pick_folder() {
+            // User selected a folder
+            match self.project_manager.open_project(path.clone()) {
+                Ok(_) => {
+                    if let Some(config) = self.project_manager.get_config() {
+                        self.console_messages.push(format!("Opened project: {}", config["name"].as_str().unwrap_or("Unknown")));
+                        self.load_project_files();
+                    }
+                },
+                Err(e) => {
+                    self.console_messages.push(format!("Failed to open project: {}", e));
+                }
+            }
+        }
+    }
+    
+    fn handle_save_project(&mut self) {
+        if let Some(root_path) = self.project_manager.get_root_path() {
+            self.console_messages.push(format!("Saved project: {}", root_path.display()));
+        } else {
+            self.console_messages.push("No project to save".to_string());
+        }
+    }
+    
+    #[allow(dead_code)]
+    fn handle_save_as_project(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Save Project As")
+            .pick_folder() {
+            self.console_messages.push(format!("Saved project as: {}", path.display()));
+        }
+    }
+    
+    fn handle_export_project(&mut self) {
+        if let Some(root_path) = self.project_manager.get_root_path() {
+            if let Some(export_path) = rfd::FileDialog::new()
+                .set_title("Export Project")
+                .add_filter("ZIP files", &["zip"])
+                .save_file() {
+                match self.export_project_as_zip(root_path, &export_path) {
+                    Ok(_) => {
+                        self.console_messages.push(format!("Exported project to: {}", export_path.display()));
+                    },
+                    Err(e) => {
+                        self.console_messages.push(format!("Failed to export project: {}", e));
+                    }
+                }
+            }
+        } else {
+            self.console_messages.push("No project to export".to_string());
+        }
+    }
+    
+    fn handle_exit_application(&mut self) {
+        std::process::exit(0);
+    }
+    
+    // Helper methods
+    fn load_project_files(&mut self) {
+        if let Some(root_path) = self.project_manager.get_root_path() {
+            match FileSystemService::scan_directory(root_path) {
+                Ok(entries) => {
+                    self.file_system_tree = entries;
+                },
+                Err(e) => {
+                    self.console_messages.push(format!("Failed to load project files: {}", e));
+                }
+            }
+        }
+    }
+    
+    fn export_project_as_zip(&self, source_path: &std::path::Path, target_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let file = std::fs::File::create(target_path)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        
+        self.add_directory_to_zip(&mut zip, source_path, source_path, &options)?;
+        zip.finish()?;
+        Ok(())
+    }
+    
+    fn add_directory_to_zip<W: Write + std::io::Seek>(
+        &self,
+        zip: &mut zip::ZipWriter<W>,
+        dir_path: &std::path::Path,
+        base_path: &std::path::Path,
+        options: &FileOptions,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for entry in std::fs::read_dir(dir_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative_path = path.strip_prefix(base_path)?;
+            
+            if path.is_file() {
+                zip.start_file(relative_path.to_string_lossy(), *options)?;
+                let content = std::fs::read(&path)?;
+                zip.write_all(&content)?;
+            } else if path.is_dir() {
+                zip.add_directory(relative_path.to_string_lossy(), *options)?;
+                self.add_directory_to_zip(zip, &path, base_path, options)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl eframe::App for EguiCodeGeneratorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Handle global keyboard shortcuts
+        self.handle_global_keyboard_events(ctx);
+        
         self.render_menu_bar(ctx);
         self.render_layout(ctx);
     }

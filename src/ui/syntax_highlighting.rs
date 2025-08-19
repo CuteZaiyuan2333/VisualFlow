@@ -3,11 +3,13 @@
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
-use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use syntect::util::LinesWithEndings;
 use eframe::egui;
 
 pub struct SyntaxHighlighter {
+    #[allow(dead_code)]
     syntax_set: SyntaxSet,
+    #[allow(dead_code)]
     theme_set: ThemeSet,
 }
 
@@ -22,6 +24,7 @@ impl Default for SyntaxHighlighter {
 
 impl SyntaxHighlighter {
     /// Highlight code and return formatted text for egui
+    #[allow(dead_code)]
     pub fn highlight_code(&self, code: &str, language: &str) -> Vec<(String, egui::Color32)> {
         let syntax = self.syntax_set
             .find_syntax_by_extension(language)
@@ -47,6 +50,7 @@ impl SyntaxHighlighter {
     }
     
     /// Get available syntax names
+    #[allow(dead_code)]
     pub fn get_syntax_names(&self) -> Vec<String> {
         self.syntax_set.syntaxes()
             .iter()
@@ -56,12 +60,14 @@ impl SyntaxHighlighter {
 }
 
 /// Convert syntect Style to egui Color32
+#[allow(dead_code)]
 fn style_to_egui_color(style: Style) -> egui::Color32 {
     let fg = style.foreground;
     egui::Color32::from_rgb(fg.r, fg.g, fg.b)
 }
 
 /// Simple Python syntax highlighter for basic cases
+#[allow(dead_code)]
 pub fn highlight_python_simple(code: &str) -> Vec<(String, egui::Color32)> {
     let mut result = Vec::new();
     let lines = code.lines();

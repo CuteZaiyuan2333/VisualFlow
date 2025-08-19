@@ -79,121 +79,184 @@ impl EguiCodeGeneratorApp {
                 ui.horizontal(|ui| {
                     ui.label("Window Editor Tools:");
                     ui.separator();
+                    
+                    // File operations
+                    if ui.button("💾 Save").clicked() {
+                        self.save_window_document();
+                    }
+                    
+                    if ui.button("📁 Save As...").clicked() {
+                        self.save_window_document_as();
+                    }
+                    
+                    ui.separator();
+                    
+                    if ui.button("🔧 Add Widget").clicked() {
+                        self.show_widget_library = true;
+                    }
+                    
+                    ui.separator();
                     ui.label(format!("Zoom: {:.1}%", self.window_editor_zoom * 100.0));
+                    
+                    // Show current file name
+                    if let Some(path) = &self.current_window_file_path {
+                        ui.separator();
+                        ui.label(format!("File: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                    }
                 });
                 
                 ui.separator();
                 
-                // Create a custom area for the window editor that fills the remaining space
-                let available_rect = ui.available_rect_before_wrap();
-                let canvas_rect = available_rect;
+                // Check if we have a window document loaded
+                if let Some(_document) = &self.current_window_document {
+                    // Create a custom area for the window editor that fills the remaining space
+                    let available_rect = ui.available_rect_before_wrap();
+                    let canvas_rect = available_rect;
+                    
+                    // Use a child UI with proper clipping to prevent overflow
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(canvas_rect), |ui| {
+                        // Set clipping to prevent drawing outside canvas bounds
+                        ui.set_clip_rect(canvas_rect);
+                        
+                        // Handle interactions first to capture input
+                        let response = ui.allocate_rect(canvas_rect, egui::Sense::click_and_drag());
+                        self.handle_window_editor_interactions(ui, &response, canvas_rect);
+                        
+                        // Draw background (light gray) - lowest layer
+                        let painter = ui.painter();
+                        painter.rect_filled(
+                            canvas_rect,
+                            egui::Rounding::ZERO,
+                            egui::Color32::from_gray(240)
+                        );
+                        
+                        // Draw grid (gray dots) - second layer
+                        self.draw_window_editor_grid(ui, canvas_rect);
+                        
+                        // Draw window content based on the loaded document
+                        self.draw_window_from_document(ui, canvas_rect);
+                    });
+                } else {
+                    // Show message when no window file is loaded
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("🪟 Window Editor");
+                        ui.add_space(20.0);
+                        ui.label("Please open a .vfwindow file to start editing.");
+                        ui.add_space(10.0);
+                        ui.label("You can:");
+                        ui.label("• Double-click a .vfwindow file in the file system");
+                        ui.label("• Create a new .vfwindow file from the file system context menu");
+                    });
+                }
                 
-                // Use a child UI with proper clipping to prevent overflow
-                ui.allocate_ui_at_rect(canvas_rect, |ui| {
-                    // Set clipping to prevent drawing outside canvas bounds
-                    ui.set_clip_rect(canvas_rect);
-                    
-                    // Handle interactions first to capture input
-                    let response = ui.allocate_rect(canvas_rect, egui::Sense::click_and_drag());
-                    self.handle_window_editor_interactions(ui, &response, canvas_rect);
-                    
-                    // Draw background (light gray) - lowest layer
-                    let painter = ui.painter();
-                    painter.rect_filled(
-                        canvas_rect,
-                        egui::Rounding::ZERO,
-                        egui::Color32::from_gray(240)
-                    );
-                    
-                    // Draw grid (gray dots) - second layer
-                    self.draw_window_editor_grid(ui, canvas_rect);
-                    
-                    // Draw mock window - top layer
-                    self.draw_mock_window(ui, canvas_rect);
-                });
+                // Handle widget library dialog
+                self.handle_widget_library_dialog(ui.ctx());
             },
         );
     }
     
     pub fn render_code_editor(&mut self, ui: &mut egui::Ui) {
+        // Handle keyboard shortcuts
+        let mut save_triggered = false;
+        let mut open_triggered = false;
+        let mut new_triggered = false;
+        
+        ui.input(|i| {
+            if i.modifiers.ctrl {
+                if i.key_pressed(egui::Key::S) {
+                    save_triggered = true;
+                }
+                if i.key_pressed(egui::Key::O) {
+                    open_triggered = true;
+                }
+                if i.key_pressed(egui::Key::N) {
+                    new_triggered = true;
+                }
+            }
+        });
+        
         ui.group(|ui| {
+            // Header with file name and status
             ui.horizontal(|ui| {
                 ui.label("Code Editor");
                 ui.separator();
-                if let Some(project_name) = self.project_manager.get_project_name() {
-                    ui.label(format!("Project: {}", project_name));
+                
+                if let Some(path) = &self.current_file_path {
+                    ui.label(format!("File: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                } else {
+                    ui.label("Untitled");
                 }
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("💾").on_hover_text("Save (Ctrl+S)").clicked() || save_triggered {
+                        if let Some(path) = &self.current_file_path.clone() {
+                            match std::fs::write(path, &self.code_content) {
+                                Ok(_) => {
+                                    self.console_messages.push(format!("Saved file: {}", path.display()));
+                                },
+                                Err(e) => {
+                                    self.console_messages.push(format!("Failed to save file: {}", e));
+                                }
+                            }
+                        } else {
+                            // If no file path, trigger save as
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Save File As")
+                                .add_filter("Text files", &["txt", "rs", "py", "js", "ts", "json", "md", "toml", "yaml", "yml"])
+                                .add_filter("All files", &["*"])
+                                .save_file() {
+                                match std::fs::write(&path, &self.code_content) {
+                                    Ok(_) => {
+                                        self.current_file_path = Some(path.clone());
+                                        self.console_messages.push(format!("Saved file as: {}", path.display()));
+                                    },
+                                    Err(e) => {
+                                        self.console_messages.push(format!("Failed to save file: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if ui.small_button("📁").on_hover_text("Open File (Ctrl+O)").clicked() || open_triggered {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Open File")
+                            .add_filter("Text files", &["txt", "rs", "py", "js", "ts", "json", "md", "toml", "yaml", "yml"])
+                            .add_filter("All files", &["*"])
+                            .pick_file() {
+                            match std::fs::read_to_string(&path) {
+                                Ok(content) => {
+                                    self.code_content = content;
+                                    self.current_file_path = Some(path.clone());
+                                    self.console_messages.push(format!("Opened file: {}", path.display()));
+                                },
+                                Err(e) => {
+                                    self.console_messages.push(format!("Failed to open file: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    
+                    if ui.small_button("📄").on_hover_text("New File (Ctrl+N)").clicked() || new_triggered {
+                        self.current_file_path = None;
+                        self.code_content = String::new();
+                        self.console_messages.push("New file created".to_string());
+                    }
+                });
             });
+            
             ui.separator();
             
-            // Create a horizontal layout for line numbers and code
-            ui.horizontal_top(|ui| {
-                let available_rect = ui.available_rect_before_wrap();
-                let line_number_width = 50.0;
-                let code_width = available_rect.width() - line_number_width - 10.0;
-                
-                // Line numbers
-                ui.allocate_ui_with_layout(
-                    egui::Vec2::new(line_number_width, available_rect.height()),
-                    egui::Layout::top_down(egui::Align::RIGHT),
-                    |ui| {
-                        ui.style_mut().visuals.extreme_bg_color = egui::Color32::from_gray(30);
-                        
-                        egui::ScrollArea::vertical()
-                            .id_source("line_numbers")
-                            .show(ui, |ui| {
-                                let line_count = self.code_content.lines().count().max(1);
-                                for i in 1..=line_count {
-                                    ui.label(
-                                        egui::RichText::new(format!("{:3}", i))
-                                            .font(egui::FontId::monospace(12.0))
-                                            .color(egui::Color32::from_gray(150))
-                                    );
-                                }
-                            });
-                    },
-                );
-                
-                ui.separator();
-                
-                // Code editor with syntax highlighting
-                ui.allocate_ui_with_layout(
-                    egui::Vec2::new(code_width, available_rect.height()),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        // Check if we should show syntax highlighting
-                        let show_highlighting = self.code_content.len() < 10000; // Limit for performance
-                        
-                        if show_highlighting {
-                            self.render_highlighted_code_editor(ui);
-                        } else {
-                            // Fallback to simple text editor for large files
-                            ui.add_sized(
-                                [ui.available_width(), ui.available_height()],
-                                egui::TextEdit::multiline(&mut self.code_content)
-                                    .font(egui::TextStyle::Monospace)
-                            );
-                        }
-                    },
-                );
-            });
+            // Fill the available space with the text editor
+            let available_rect = ui.available_rect_before_wrap();
+            ui.add_sized(
+                [available_rect.width(), available_rect.height()],
+                egui::TextEdit::multiline(&mut self.code_content)
+                    .font(egui::TextStyle::Monospace)
+                    .code_editor()
+            );
         });
-    }
-    
-    fn render_highlighted_code_editor(&mut self, ui: &mut egui::Ui) {
-        use crate::ui::syntax_highlighting::highlight_python_simple;
-        
-        // For now, we'll use a simple approach with a text editor
-        // In a more advanced implementation, you'd render highlighted text directly
-        ui.add_sized(
-            [ui.available_width(), ui.available_height()],
-            egui::TextEdit::multiline(&mut self.code_content)
-                .font(egui::FontId::monospace(12.0))
-                .desired_width(f32::INFINITY)
-        );
-        
-        // TODO: Implement proper syntax highlighting rendering
-        // This would require custom text rendering with colored segments
     }
     
     pub fn render_node_editor(&mut self, ui: &mut egui::Ui) {
@@ -227,7 +290,7 @@ impl EguiCodeGeneratorApp {
                 let canvas_rect = available_rect;
                 
                 // Use a child UI with proper clipping to prevent overflow
-                ui.allocate_ui_at_rect(canvas_rect, |ui| {
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(canvas_rect), |ui| {
                     // Set clipping to prevent drawing outside canvas bounds
                     ui.set_clip_rect(canvas_rect);
                     
@@ -273,6 +336,188 @@ impl EguiCodeGeneratorApp {
             },
         );
     }
+     
+     // Widget library dialog handler
+     fn handle_widget_library_dialog(&mut self, ctx: &egui::Context) {
+         if self.show_widget_library {
+             let mut close_dialog = false;
+             let mut selected_widget: Option<crate::window_editor::WidgetType> = None;
+             
+             egui::Window::new("Widget Library")
+                 .collapsible(false)
+                 .resizable(true)
+                 .default_size([400.0, 500.0])
+                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                 .show(ctx, |ui| {
+                     ui.vertical(|ui| {
+                         // Search box
+                         ui.horizontal(|ui| {
+                             ui.label("Search:");
+                             let mut search_text = self.widget_library.get_search_filter().to_string();
+                             if ui.text_edit_singleline(&mut search_text).changed() {
+                                 self.widget_library.set_search_filter(search_text);
+                             }
+                         });
+                         
+                         ui.separator();
+                         
+                         // Category filter
+                          ui.horizontal(|ui| {
+                              ui.label("Category:");
+                              let categories: Vec<String> = self.widget_library.get_categories().into_iter().cloned().collect();
+                              let current_category = self.widget_library.get_selected_category().clone();
+                              let mut selected_category = current_category.clone();
+                              
+                              egui::ComboBox::from_label("")
+                                  .selected_text(current_category.as_deref().unwrap_or("All"))
+                                  .show_ui(ui, |ui| {
+                                      if ui.selectable_value(&mut selected_category, None, "All").clicked() {
+                                          // Will be handled after the closure
+                                      }
+                                      for category in &categories {
+                                          if ui.selectable_value(&mut selected_category, Some(category.clone()), category).clicked() {
+                                              // Will be handled after the closure
+                                          }
+                                      }
+                                  });
+                              
+                              // Update the widget library after the closure
+                              if selected_category != current_category {
+                                  self.widget_library.set_selected_category(selected_category);
+                              }
+                          });
+                         
+                         ui.separator();
+                         
+                         // Widget grid
+                         egui::ScrollArea::vertical()
+                             .auto_shrink([false, false])
+                             .show(ui, |ui| {
+                                 let filtered_widgets = self.widget_library.get_filtered_widgets();
+                                 
+                                 ui.columns(3, |columns| {
+                                     for (i, widget) in filtered_widgets.iter().enumerate() {
+                                         let col = i % 3;
+                                         columns[col].vertical(|ui| {
+                                             ui.group(|ui| {
+                                                 ui.set_min_size([100.0, 80.0].into());
+                                                 ui.vertical_centered(|ui| {
+                                                     ui.label(&widget.icon);
+                                                     ui.label(&widget.name);
+                                                     if ui.small_button("Add").clicked() {
+                                                         selected_widget = Some(widget.widget_type.clone());
+                                                         close_dialog = true;
+                                                     }
+                                                 });
+                                                 ui.label(&widget.description);
+                                             });
+                                         });
+                                     }
+                                 });
+                             });
+                         
+                         ui.separator();
+                         
+                         // Dialog buttons
+                         ui.horizontal(|ui| {
+                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                 if ui.button("Cancel").clicked() {
+                                     close_dialog = true;
+                                 }
+                             });
+                         });
+                     });
+                 });
+             
+             // Handle widget selection
+             if let Some(widget_type) = selected_widget {
+                 self.add_widget_to_window(widget_type);
+             }
+             
+             // Close dialog if requested
+             if close_dialog {
+                 self.show_widget_library = false;
+             }
+         }
+     }
+     
+     fn add_widget_to_window(&mut self, widget_type: crate::window_editor::WidgetType) {
+          if let Some(document) = &mut self.current_window_document {
+              let new_widget = crate::window_editor::WindowNode::new_widget(
+                  widget_type.clone(),
+                  format!("New {}", widget_type.display_name()),
+                  [100.0, 100.0], // Default position
+                  [100.0, 30.0]   // Default size
+              );
+              
+              document.root_node.add_child(new_widget);
+              document.update_modified_time();
+              
+              self.console_messages.push(format!("Added {} widget to window", widget_type.display_name()));
+          } else {
+              self.console_messages.push("No window document loaded".to_string());
+          }
+      }
+      
+      fn save_window_document(&mut self) {
+          if let Some(document) = &mut self.current_window_document {
+              if let Some(path) = &self.current_window_file_path {
+                  // Save to existing file
+                  document.update_modified_time();
+                  match document.to_json() {
+                      Ok(json_content) => {
+                          match std::fs::write(path, json_content) {
+                              Ok(()) => {
+                                  self.console_messages.push(format!("Saved window file: {}", path.display()));
+                              }
+                              Err(e) => {
+                                  self.console_messages.push(format!("Failed to save window file: {}", e));
+                              }
+                          }
+                      }
+                      Err(e) => {
+                          self.console_messages.push(format!("Failed to serialize window document: {}", e));
+                      }
+                  }
+              } else {
+                  // No file path, trigger save as
+                  self.save_window_document_as();
+              }
+          } else {
+              self.console_messages.push("No window document to save".to_string());
+          }
+      }
+      
+      fn save_window_document_as(&mut self) {
+          if let Some(document) = &mut self.current_window_document {
+              if let Some(path) = rfd::FileDialog::new()
+                  .set_title("Save Window File As")
+                  .add_filter("Window files", &["vfwindow"])
+                  .add_filter("All files", &["*"])
+                  .save_file() {
+                  
+                  document.update_modified_time();
+                  match document.to_json() {
+                      Ok(json_content) => {
+                          match std::fs::write(&path, json_content) {
+                              Ok(()) => {
+                                  self.current_window_file_path = Some(path.clone());
+                                  self.console_messages.push(format!("Saved window file as: {}", path.display()));
+                              }
+                              Err(e) => {
+                                  self.console_messages.push(format!("Failed to save window file: {}", e));
+                              }
+                          }
+                      }
+                      Err(e) => {
+                          self.console_messages.push(format!("Failed to serialize window document: {}", e));
+                      }
+                  }
+              }
+          } else {
+              self.console_messages.push("No window document to save".to_string());
+          }
+      }
      
      // Window editor helper functions
      fn handle_window_editor_interactions(&mut self, ui: &mut egui::Ui, response: &egui::Response, canvas_rect: egui::Rect) {
@@ -383,242 +628,141 @@ impl EguiCodeGeneratorApp {
          }
      }
      
-     fn draw_mock_window(&mut self, ui: &mut egui::Ui, canvas_rect: egui::Rect) {
+     fn draw_window_from_document(&mut self, ui: &mut egui::Ui, canvas_rect: egui::Rect) {
+         if let Some(document) = self.current_window_document.clone() {
+             self.draw_window_node(ui, canvas_rect, &document.root_node);
+         }
+     }
+     
+     fn draw_window_node(&mut self, ui: &mut egui::Ui, canvas_rect: egui::Rect, node: &crate::window_editor::WindowNode) {
          let offset = self.window_editor_offset;
          let zoom = self.window_editor_zoom;
-         
-         // Mock window properties (in world coordinates)
-         let window_pos = egui::Vec2::new(0.0, 0.0); // Position at (0, 0) in world coordinates - the origin
          
          // Window editor coordinate system origin (relative to canvas_rect)
          let editor_origin = egui::Vec2::new(50.0, 50.0);
          
-         // Transform world coordinates to screen coordinates
-         let screen_pos = egui::Pos2::new(
-             canvas_rect.min.x + editor_origin.x + window_pos.x * zoom + offset.x,
-             canvas_rect.min.y + editor_origin.y + window_pos.y * zoom + offset.y
-         );
+         // Calculate screen position from world coordinates
+         let world_pos = egui::Vec2::new(node.position[0], node.position[1]);
+         let screen_pos = canvas_rect.min + editor_origin + (world_pos + offset) * zoom;
          
-         // Window dimensions in world coordinates
-         let window_width = 400.0;
-         let window_height = 300.0;
-         let title_bar_height = 30.0;
+         // Calculate size with zoom
+         let world_size = egui::Vec2::new(node.size[0], node.size[1]);
+         let screen_size = world_size * zoom;
          
-         // Scale dimensions
-         let scaled_width = window_width * zoom;
-         let scaled_height = window_height * zoom;
-         let scaled_title_height = title_bar_height * zoom;
+         // Create rect for the node
+         let node_rect = egui::Rect::from_min_size(screen_pos, screen_size);
          
-         let window_rect = egui::Rect::from_min_size(screen_pos, egui::Vec2::new(scaled_width, scaled_height));
-         
-         // Only draw if window is visible in canvas
-         if window_rect.intersects(canvas_rect) {
+         // Only draw if visible in canvas
+         if canvas_rect.intersects(node_rect) {
              let painter = ui.painter();
-              
-              // Note: clipping is handled by the parent UI
              
-             // Draw window background
-             painter.rect_filled(
-                 window_rect,
-                 egui::Rounding::same(5.0 * zoom),
-                 egui::Color32::WHITE
-             );
+             // Draw node based on type
+             match &node.node_type {
+                 crate::window_editor::NodeType::Window => {
+                     // Draw window frame
+                     painter.rect_stroke(
+                         node_rect,
+                         egui::Rounding::same(4.0),
+                         egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 100, 100))
+                     );
+                     
+                     // Draw title bar
+                     let title_height = 30.0 * zoom;
+                     let title_rect = egui::Rect::from_min_size(
+                         node_rect.min,
+                         egui::Vec2::new(node_rect.width(), title_height)
+                     );
+                     painter.rect_filled(
+                         title_rect,
+                         egui::Rounding::same(4.0),
+                         egui::Color32::from_rgb(70, 70, 70)
+                     );
+                     
+                     // Draw title text
+                     if zoom > 0.5 {
+                         painter.text(
+                             title_rect.center(),
+                             egui::Align2::CENTER_CENTER,
+                             &node.name,
+                             egui::FontId::proportional(12.0 * zoom),
+                             egui::Color32::WHITE
+                         );
+                     }
+                 }
+                 crate::window_editor::NodeType::Container => {
+                     // Draw container background
+                     painter.rect_filled(
+                         node_rect,
+                         egui::Rounding::same(2.0),
+                         egui::Color32::from_rgba_unmultiplied(200, 200, 255, 100)
+                     );
+                     
+                     // Draw container border
+                     painter.rect_stroke(
+                         node_rect,
+                         egui::Rounding::same(2.0),
+                         egui::Stroke::new(1.0, egui::Color32::from_rgb(150, 150, 200))
+                     );
+                     
+                     // Draw label
+                     if zoom > 0.3 {
+                         painter.text(
+                             node_rect.min + egui::Vec2::new(5.0, 5.0),
+                             egui::Align2::LEFT_TOP,
+                             &node.name,
+                             egui::FontId::proportional(10.0 * zoom),
+                             egui::Color32::from_rgb(100, 100, 150)
+                         );
+                     }
+                 }
+                 crate::window_editor::NodeType::Widget(widget_type) => {
+                     // Draw widget background
+                     painter.rect_filled(
+                         node_rect,
+                         egui::Rounding::same(2.0),
+                         egui::Color32::from_rgb(240, 240, 240)
+                     );
+                     
+                     // Draw widget border
+                     painter.rect_stroke(
+                         node_rect,
+                         egui::Rounding::same(2.0),
+                         egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 180, 180))
+                     );
+                     
+                     // Draw widget icon and name
+                     if zoom > 0.3 {
+                         let icon = widget_type.icon();
+                         painter.text(
+                             node_rect.center(),
+                             egui::Align2::CENTER_CENTER,
+                             &format!("{} {}", icon, node.name),
+                             egui::FontId::proportional(10.0 * zoom),
+                             egui::Color32::BLACK
+                         );
+                     }
+                 }
+             }
              
-             // Draw window border
-             painter.rect_stroke(
-                 window_rect,
-                 egui::Rounding::same(5.0 * zoom),
-                 egui::Stroke::new(2.0 * zoom, egui::Color32::from_gray(100))
-             );
-             
-             // Draw title bar
-             let title_rect = egui::Rect::from_min_size(
-                 screen_pos,
-                 egui::Vec2::new(scaled_width, scaled_title_height)
-             );
-             painter.rect_filled(
-                 title_rect,
-                 egui::Rounding { nw: 5.0 * zoom, ne: 5.0 * zoom, sw: 0.0, se: 0.0 },
-                 egui::Color32::from_gray(200)
-             );
-             
-             // Draw title text
-             let title_text_pos = egui::Pos2::new(
-                 screen_pos.x + 10.0 * zoom,
-                 screen_pos.y + scaled_title_height * 0.5
-             );
-             painter.text(
-                 title_text_pos,
-                 egui::Align2::LEFT_CENTER,
-                 "Sample Window",
-                 egui::FontId::proportional(14.0 * zoom.max(0.5)),
-                 egui::Color32::BLACK
-             );
-             
-             // Draw close button
-             let close_button_size = 20.0 * zoom;
-             let close_button_pos = egui::Pos2::new(
-                 screen_pos.x + scaled_width - close_button_size - 5.0 * zoom,
-                 screen_pos.y + (scaled_title_height - close_button_size) * 0.5
-             );
-             let close_button_rect = egui::Rect::from_min_size(
-                 close_button_pos,
-                 egui::Vec2::new(close_button_size, close_button_size)
-             );
-             painter.rect_filled(
-                 close_button_rect,
-                 egui::Rounding::same(3.0 * zoom),
-                 egui::Color32::from_rgb(220, 80, 80)
-             );
-             painter.text(
-                 close_button_rect.center(),
-                 egui::Align2::CENTER_CENTER,
-                 "×",
-                 egui::FontId::proportional(12.0 * zoom.max(0.5)),
-                 egui::Color32::WHITE
-             );
-             
-             // Draw content area
-             let content_start_y = screen_pos.y + scaled_title_height;
-             let content_height = scaled_height - scaled_title_height;
-             let content_rect = egui::Rect::from_min_size(
-                 egui::Pos2::new(screen_pos.x, content_start_y),
-                 egui::Vec2::new(scaled_width, content_height)
-             );
-             
-             // Draw content background
-             painter.rect_filled(
-                 content_rect,
-                 egui::Rounding { nw: 0.0, ne: 0.0, sw: 5.0 * zoom, se: 5.0 * zoom },
-                 egui::Color32::from_gray(250)
-             );
-             
-             // Draw sample UI components
-             let mut y_offset = content_start_y + 20.0 * zoom;
-             let x_margin = 20.0 * zoom;
-             
-             // Sample label
-             painter.text(
-                 egui::Pos2::new(screen_pos.x + x_margin, y_offset),
-                 egui::Align2::LEFT_TOP,
-                 "This is a sample egui window",
-                 egui::FontId::proportional(12.0 * zoom.max(0.5)),
-                 egui::Color32::BLACK
-             );
-             y_offset += 30.0 * zoom;
-             
-             // Sample button
-             let button_rect = egui::Rect::from_min_size(
-                 egui::Pos2::new(screen_pos.x + x_margin, y_offset),
-                 egui::Vec2::new(80.0 * zoom, 25.0 * zoom)
-             );
-             painter.rect_filled(
-                 button_rect,
-                 egui::Rounding::same(3.0 * zoom),
-                 egui::Color32::from_rgb(100, 150, 255)
-             );
-             painter.text(
-                 button_rect.center(),
-                 egui::Align2::CENTER_CENTER,
-                 "Click Me",
-                 egui::FontId::proportional(11.0 * zoom.max(0.5)),
-                 egui::Color32::WHITE
-             );
-             y_offset += 40.0 * zoom;
-             
-             // Sample text input
-             painter.text(
-                 egui::Pos2::new(screen_pos.x + x_margin, y_offset),
-                 egui::Align2::LEFT_TOP,
-                 "Text input:",
-                 egui::FontId::proportional(11.0 * zoom.max(0.5)),
-                 egui::Color32::BLACK
-             );
-             let text_input_rect = egui::Rect::from_min_size(
-                 egui::Pos2::new(screen_pos.x + x_margin + 80.0 * zoom, y_offset - 2.0 * zoom),
-                 egui::Vec2::new(150.0 * zoom, 20.0 * zoom)
-             );
-             painter.rect_filled(
-                 text_input_rect,
-                 egui::Rounding::same(2.0 * zoom),
-                 egui::Color32::WHITE
-             );
-             painter.rect_stroke(
-                 text_input_rect,
-                 egui::Rounding::same(2.0 * zoom),
-                 egui::Stroke::new(1.0 * zoom, egui::Color32::from_gray(150))
-             );
-             painter.text(
-                 egui::Pos2::new(text_input_rect.min.x + 5.0 * zoom, text_input_rect.center().y),
-                 egui::Align2::LEFT_CENTER,
-                 "Sample text",
-                 egui::FontId::proportional(10.0 * zoom.max(0.5)),
-                 egui::Color32::from_gray(100)
-             );
-             y_offset += 35.0 * zoom;
-             
-             // Sample checkbox
-             let checkbox_size = 15.0 * zoom;
-             let checkbox_rect = egui::Rect::from_min_size(
-                 egui::Pos2::new(screen_pos.x + x_margin, y_offset),
-                 egui::Vec2::new(checkbox_size, checkbox_size)
-             );
-             painter.rect_filled(
-                 checkbox_rect,
-                 egui::Rounding::same(2.0 * zoom),
-                 egui::Color32::WHITE
-             );
-             painter.rect_stroke(
-                 checkbox_rect,
-                 egui::Rounding::same(2.0 * zoom),
-                 egui::Stroke::new(1.0 * zoom, egui::Color32::from_gray(150))
-             );
-             // Draw checkmark
-             painter.text(
-                 checkbox_rect.center(),
-                 egui::Align2::CENTER_CENTER,
-                 "✓",
-                 egui::FontId::proportional(10.0 * zoom.max(0.5)),
-                 egui::Color32::from_rgb(50, 150, 50)
-             );
-             painter.text(
-                 egui::Pos2::new(screen_pos.x + x_margin + checkbox_size + 10.0 * zoom, y_offset + checkbox_size * 0.5),
-                 egui::Align2::LEFT_CENTER,
-                 "Sample checkbox",
-                 egui::FontId::proportional(11.0 * zoom.max(0.5)),
-                 egui::Color32::BLACK
-             );
-             y_offset += 30.0 * zoom;
-             
-             // Sample slider
-             painter.text(
-                 egui::Pos2::new(screen_pos.x + x_margin, y_offset),
-                 egui::Align2::LEFT_TOP,
-                 "Slider:",
-                 egui::FontId::proportional(11.0 * zoom.max(0.5)),
-                 egui::Color32::BLACK
-             );
-             let slider_rect = egui::Rect::from_min_size(
-                 egui::Pos2::new(screen_pos.x + x_margin + 60.0 * zoom, y_offset + 5.0 * zoom),
-                 egui::Vec2::new(120.0 * zoom, 6.0 * zoom)
-             );
-             painter.rect_filled(
-                 slider_rect,
-                 egui::Rounding::same(3.0 * zoom),
-                 egui::Color32::from_gray(200)
-             );
-             // Draw slider handle
-             let handle_pos = egui::Pos2::new(
-                 slider_rect.min.x + slider_rect.width() * 0.5, // 50% position
-                 slider_rect.center().y
-             );
-             painter.circle_filled(
-                 handle_pos,
-                 8.0 * zoom,
-                 egui::Color32::from_rgb(100, 150, 255)
-             );
+             // Highlight if selected
+             if let Some(selected_id) = &self.window_editor_selected_node {
+                 if selected_id == &node.id {
+                     painter.rect_stroke(
+                         node_rect,
+                         egui::Rounding::same(2.0),
+                         egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 255))
+                     );
+                 }
+             }
+         }
+         
+         // Draw children
+         for child in &node.children {
+             self.draw_window_node(ui, canvas_rect, child);
          }
      }
+     
+
 
      // Node graph helper functions
      fn draw_grid(&self, ui: &mut egui::Ui, canvas_rect: egui::Rect) {
@@ -922,6 +1066,14 @@ impl EguiCodeGeneratorApp {
          let offset = self.node_graph.canvas_offset;
          let zoom = self.node_graph.canvas_zoom;
          
+         // Check if any text edit has focus to avoid consuming Shift key events
+         let text_edit_has_focus = ui.ctx().memory(|mem| {
+             mem.focused().map_or(false, |id| {
+                 // Check if the focused widget is a text edit
+                 mem.data.get_temp::<egui::text_edit::TextEditState>(id).is_some()
+             })
+         });
+         
          // Handle zoom with mouse wheel (centered on mouse position)
          if response.hovered() {
              let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
@@ -1003,7 +1155,8 @@ impl EguiCodeGeneratorApp {
          // Begin interactions on primary drag start: either start box selection (with Shift), start node dragging, or start connection dragging
          if response.drag_started_by(egui::PointerButton::Primary) {
              if let Some(start_pos) = response.interact_pointer_pos() {
-                 let shift_held = ui.input(|i| i.modifiers.shift);
+                 // Only check Shift key if no text edit has focus
+                 let shift_held = !text_edit_has_focus && ui.input(|i| i.modifiers.shift);
                  let canvas_pos = egui::Vec2::new(
                      (start_pos.x - canvas_rect.min.x - self.node_graph.canvas_offset.x) / self.node_graph.canvas_zoom,
                      (start_pos.y - canvas_rect.min.y - self.node_graph.canvas_offset.y) / self.node_graph.canvas_zoom
@@ -1059,7 +1212,8 @@ impl EguiCodeGeneratorApp {
              
              // Handle left mouse button
              if response.clicked_by(egui::PointerButton::Primary) {
-                 let shift_held = ui.input(|i| i.modifiers.shift);
+                 // Only check Shift key if no text edit has focus
+                 let shift_held = !text_edit_has_focus && ui.input(|i| i.modifiers.shift);
                  if let Some((node_id, port_id, is_output)) = clicked_port {
                      self.handle_port_click(&node_id, &port_id, is_output, pointer_pos);
                  } else if let Some(ref node_id) = clicked_node {

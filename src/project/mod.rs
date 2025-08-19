@@ -1,9 +1,11 @@
 //! Project management module
 //! Handles project creation, loading, and file system operations
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::fs;
-use crate::FileSystemEntry;
+use crate::filesystem::FileSystemEntry;
+
+
 
 pub struct ProjectManager {
     pub current_project_path: Option<PathBuf>,
@@ -20,13 +22,39 @@ impl Default for ProjectManager {
 }
 
 impl ProjectManager {
+    /// Create a new ProjectManager instance
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    /// Get the root path of the current project
+    pub fn get_root_path(&self) -> Option<&PathBuf> {
+        self.current_project_path.as_ref()
+    }
+    
+    /// Get project configuration
+    pub fn get_config(&self) -> Option<serde_json::Value> {
+        if let Some(project_path) = &self.current_project_path {
+            let config_path = project_path.join("project.json");
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                serde_json::from_str(&content).ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+    
     /// Create a new project in the specified directory
     pub fn create_project(&mut self, project_path: PathBuf, project_name: String) -> Result<(), String> {
-        if project_path.exists() {
-            return Err("Directory already exists".to_string());
+        // Check if project.json already exists in the directory
+        let config_path = project_path.join("project.json");
+        if config_path.exists() {
+            return Err("Directory already contains a VisualFlow project".to_string());
         }
         
-        // Create project directory
+        // Create project directory if it doesn't exist
         fs::create_dir_all(&project_path)
             .map_err(|e| format!("Failed to create project directory: {}", e))?;
         
@@ -92,73 +120,22 @@ impl ProjectManager {
     /// Get the current project's file system tree
     pub fn get_file_system_tree(&self) -> Vec<FileSystemEntry> {
         if let Some(project_path) = &self.current_project_path {
-            self.scan_directory(project_path)
+            use crate::filesystem::FileSystemService;
+            FileSystemService::scan_directory(project_path).unwrap_or_default()
         } else {
             // Return default/empty structure if no project is open
             vec![
                 FileSystemEntry::Dir {
                     name: "No project open".to_string(),
+                    path: std::path::PathBuf::from("."),
                     children: vec![],
+                    expanded: false,
                 },
             ]
         }
     }
     
-    /// Recursively scan a directory and build FileSystemEntry tree
-    fn scan_directory(&self, dir_path: &Path) -> Vec<FileSystemEntry> {
-        let mut entries = Vec::new();
-        
-        if let Ok(read_dir) = fs::read_dir(dir_path) {
-            let mut items: Vec<_> = read_dir.filter_map(|entry| entry.ok()).collect();
-            
-            // Sort: directories first, then files, both alphabetically
-            items.sort_by(|a, b| {
-                let a_is_dir = a.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                let b_is_dir = b.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                
-                match (a_is_dir, b_is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.file_name().cmp(&b.file_name()),
-                }
-            });
-            
-            for entry in items {
-                let file_name = entry.file_name().to_string_lossy().to_string();
-                
-                // Skip hidden files and common build/cache directories
-                if file_name.starts_with('.') || 
-                   file_name == "__pycache__" || 
-                   file_name == "node_modules" || 
-                   file_name == "target" {
-                    continue;
-                }
-                
-                if let Ok(file_type) = entry.file_type() {
-                    if file_type.is_dir() {
-                        let children = self.scan_directory(&entry.path());
-                        entries.push(FileSystemEntry::Dir {
-                            name: file_name,
-                            children,
-                        });
-                    } else {
-                        entries.push(FileSystemEntry::File {
-                            name: file_name,
-                        });
-                    }
-                }
-            }
-        }
-        
-        entries
-    }
-    
-    /// Get the full path to a file in the project
-    pub fn get_file_path(&self, relative_path: &str) -> Option<PathBuf> {
-        self.current_project_path.as_ref().map(|project_path| {
-            project_path.join(relative_path)
-        })
-    }
+
     
     /// Check if a project is currently open
     pub fn has_open_project(&self) -> bool {

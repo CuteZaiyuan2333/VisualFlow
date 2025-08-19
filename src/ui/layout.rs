@@ -3,6 +3,9 @@ use crate::{EguiCodeGeneratorApp, EditorTab};
 
 impl EguiCodeGeneratorApp {
     pub fn render_layout(&mut self, ctx: &egui::Context) {
+        // Handle dialogs first to ensure they are displayed
+        self.handle_dialogs(ctx);
+        
         // Isolated layout manager with independent panel containers
         egui::CentralPanel::default().show(ctx, |ui| {
             let total_rect = ui.available_rect_before_wrap();
@@ -36,7 +39,7 @@ impl EguiCodeGeneratorApp {
                         egui::Vec2::new(left_width, total_height)
                     );
                     
-                    ui.allocate_ui_at_rect(left_rect, |ui| {
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
                         self.render_left_content_isolated(ui, left_width, total_height);
                     });
                     
@@ -50,7 +53,7 @@ impl EguiCodeGeneratorApp {
                     egui::Vec2::new(center_width, total_height)
                 );
                 
-                ui.allocate_ui_at_rect(center_rect, |ui| {
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(center_rect), |ui| {
                     self.render_center_content_isolated(ui, center_width, total_height);
                 });
                 
@@ -63,7 +66,7 @@ impl EguiCodeGeneratorApp {
                         egui::Vec2::new(right_width, total_height)
                     );
                     
-                    ui.allocate_ui_at_rect(right_rect, |ui| {
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(right_rect), |ui| {
                         self.render_right_content_isolated(ui, right_width, total_height);
                     });
                 }
@@ -188,7 +191,7 @@ impl EguiCodeGeneratorApp {
                     egui::Vec2::new(panel_width, self.cached_node_tree_height)
                 );
                 
-                ui.allocate_ui_at_rect(node_rect, |ui| {
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(node_rect), |ui| {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label("🌳");
@@ -205,10 +208,26 @@ impl EguiCodeGeneratorApp {
                         ui.separator();
                         
                         egui::ScrollArea::vertical()
-                            .id_source("node_tree_scroll")
+                            .id_salt("node_tree_scroll")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                Self::render_node_tree(ui, &mut self.selected_node, &self.node_tree);
+                                // Check if we're in window editor mode with a loaded document
+                                if self.current_tab == EditorTab::WindowEditor {
+                                    if self.current_window_document.is_some() {
+                                        self.render_window_node_tree(ui);
+                                    } else {
+                                        // Show message when no window file is loaded
+                                        ui.vertical_centered(|ui| {
+                                            ui.add_space(20.0);
+                                            ui.label("🪟 No window file opened");
+                                            ui.add_space(10.0);
+                                            ui.label("Please open a .vfwindow file");
+                                            ui.label("to view the node tree.");
+                                        });
+                                    }
+                                } else {
+                                    Self::render_node_tree(ui, &mut self.selected_node, &self.node_tree);
+                                }
                             });
                     });
                 });
@@ -226,7 +245,7 @@ impl EguiCodeGeneratorApp {
                     egui::Vec2::new(panel_width, self.cached_file_system_height)
                 );
                 
-                ui.allocate_ui_at_rect(file_rect, |ui| {
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(file_rect), |ui| {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label("📁");
@@ -235,7 +254,7 @@ impl EguiCodeGeneratorApp {
                         ui.separator();
                         
                         egui::ScrollArea::vertical()
-                            .id_source("file_system_scroll")
+                            .id_salt("file_system_scroll")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 self.render_file_system(ui);
@@ -322,7 +341,7 @@ impl EguiCodeGeneratorApp {
                 egui::Vec2::new(panel_width, self.cached_editor_height)
             );
             
-            ui.allocate_ui_at_rect(editor_rect, |ui| {
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(editor_rect), |ui| {
                 ui.vertical(|ui| {
 
                     
@@ -354,7 +373,7 @@ impl EguiCodeGeneratorApp {
                     egui::Vec2::new(panel_width, self.cached_console_height)
                 );
                 
-                ui.allocate_ui_at_rect(console_rect, |ui| {
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(console_rect), |ui| {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label("📟");
@@ -364,7 +383,7 @@ impl EguiCodeGeneratorApp {
                         
                         // Use ScrollArea to prevent height changes due to content
                         egui::ScrollArea::vertical()
-                            .id_source("console_scroll")
+                            .id_salt("console_scroll")
                             .auto_shrink([false, false])
                             .stick_to_bottom(true)
                             .show(ui, |ui| {
@@ -470,7 +489,7 @@ impl EguiCodeGeneratorApp {
             egui::Vec2::new(panel_width, panel_height)
         );
         
-        ui.allocate_ui_at_rect(content_rect, |ui| {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
             ui.vertical(|ui| {
                 // Add padding from top
                 ui.add_space(8.0);
@@ -508,5 +527,46 @@ impl EguiCodeGeneratorApp {
                 }
             });
         });
+    }
+    
+    // Window node tree rendering methods
+    pub fn render_window_node_tree(&mut self, ui: &mut egui::Ui) {
+        if let Some(document) = self.current_window_document.clone() {
+            self.render_window_node_recursive(ui, &document.root_node, 0);
+        }
+    }
+    
+    fn render_window_node_recursive(&mut self, ui: &mut egui::Ui, node: &crate::window_editor::WindowNode, depth: usize) {
+        let is_selected = self.window_editor_selected_node.as_ref() == Some(&node.id);
+        let indent = (depth as f32) * 16.0;
+        
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            
+            let icon = match &node.node_type {
+                crate::window_editor::NodeType::Window => "🪟",
+                crate::window_editor::NodeType::Container => "📦",
+                crate::window_editor::NodeType::Widget(widget_type) => widget_type.icon(),
+            };
+            
+            ui.label(icon);
+            
+            let response = ui.selectable_label(is_selected, &node.name);
+            
+            if response.clicked() {
+                self.window_editor_selected_node = Some(node.id.clone());
+            }
+            
+            if response.secondary_clicked() {
+                self.show_node_context_menu = true;
+                self.node_context_menu_pos = response.interact_pointer_pos().unwrap_or_default();
+                self.node_context_menu_target = Some(node.id.clone());
+            }
+        });
+        
+        // Render children
+        for child in &node.children {
+            self.render_window_node_recursive(ui, child, depth + 1);
+        }
     }
 }
