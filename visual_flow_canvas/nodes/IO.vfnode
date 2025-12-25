@@ -1,0 +1,13 @@
+/// @name: Print
+/// @in: msg: String
+fn print_log(msg) { print(msg); }
+
+/// @name: Read File
+/// @in: path: String
+/// @out: content: String
+fn read_file(path) {}
+
+/// @name: Write File
+/// @in: path: String, content: String
+/// @out: success: Bool
+fn write_file(path, content) {}

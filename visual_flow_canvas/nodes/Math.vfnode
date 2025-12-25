@@ -1,0 +1,14 @@
+/// @name: Add
+/// @in: a: Number, b: Number
+/// @out: sum: Number
+fn add(a, b) { a + b }
+
+/// @name: Multiply
+/// @in: a: Number, b: Number
+/// @out: product: Number
+fn mul(a, b) { a * b }
+
+/// @name: Subtract
+/// @in: a: Number, b: Number
+/// @out: diff: Number
+fn sub(a, b) { a - b }
