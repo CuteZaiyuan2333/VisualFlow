@@ -1,0 +1,9 @@
+[plugin]
+name = "visual_flow_canvas"
+display_name = "VisualFlow Canvas"
+version = "0.1.0"
+author = "Verbium Assistant"
+description = "A node-based visual programming canvas for VisualFlow."
+
+[external_dependencies]
+# We'll add egui_node_graph and others later as the implementation progresses
