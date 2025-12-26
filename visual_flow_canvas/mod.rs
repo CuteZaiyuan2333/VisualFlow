@@ -50,7 +50,7 @@ pub struct NodeTemplate {
     pub rhai_body: String, 
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeInstance {
     pub id: NodeId,
     pub template_name: String,
@@ -60,7 +60,7 @@ pub struct NodeInstance {
     pub data: String, 
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Connection {
     pub from_node: NodeId,
     pub from_port: usize, 
@@ -108,6 +108,16 @@ pub struct VisualFlowCanvasTab {
 
     io_rx: Arc<Mutex<Receiver<IoResult>>>,
     io_tx: Sender<IoResult>,
+
+    undo_stack: Vec<HistoryState>,
+    redo_stack: Vec<HistoryState>,
+}
+
+#[derive(Clone, PartialEq)]
+struct HistoryState {
+    nodes: HashMap<NodeId, NodeInstance>,
+    connections: Vec<Connection>,
+    next_node_id: usize,
 }
 
 impl std::fmt::Debug for VisualFlowCanvasTab {
@@ -120,6 +130,51 @@ impl std::fmt::Debug for VisualFlowCanvasTab {
 }
 
 impl VisualFlowCanvasTab {
+    fn push_undo(&mut self) {
+        let state = HistoryState {
+            nodes: self.nodes.clone(),
+            connections: self.connections.clone(),
+            next_node_id: self.next_node_id,
+        };
+        // 只有当状态真正改变时才推送（简单检查）
+        if let Some(last) = self.undo_stack.last() {
+            if last == &state {
+                return;
+            }
+        }
+        self.undo_stack.push(state);
+        self.redo_stack.clear();
+        if self.undo_stack.len() > 50 { self.undo_stack.remove(0); }
+    }
+
+    fn undo(&mut self) {
+        if let Some(current) = self.undo_stack.pop() {
+            let redo_state = HistoryState {
+                nodes: self.nodes.clone(),
+                connections: self.connections.clone(),
+                next_node_id: self.next_node_id,
+            };
+            self.redo_stack.push(redo_state);
+            self.nodes = current.nodes;
+            self.connections = current.connections;
+            self.next_node_id = current.next_node_id;
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            let undo_state = HistoryState {
+                nodes: self.nodes.clone(),
+                connections: self.connections.clone(),
+                next_node_id: self.next_node_id,
+            };
+            self.undo_stack.push(undo_state);
+            self.nodes = next.nodes;
+            self.connections = next.connections;
+            self.next_node_id = next.next_node_id;
+        }
+    }
+
     pub fn new(templates: Vec<NodeTemplate>) -> Self {
         let (tx, rx) = channel();
         let mut tab = Self {
@@ -132,6 +187,8 @@ impl VisualFlowCanvasTab {
             secondary_click_start: None, secondary_started_on_node: false, is_swiping: false, context_menu_pos: None,
             is_collapsed: false, dragged_template: None,
             io_rx: Arc::new(Mutex::new(rx)), io_tx: tx,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         };
         if tab.templates.iter().any(|t| t.name == "Start") {
              tab.add_node("Start", Pos2::new(50.0, 50.0));
@@ -169,6 +226,7 @@ impl VisualFlowCanvasTab {
     }
 
     fn add_node(&mut self, template_name: &str, pos: Pos2) -> NodeId {
+        self.push_undo();
         let id = NodeId(self.next_node_id); self.next_node_id += 1;
         let t = self.templates.iter().find(|t| t.name == template_name).unwrap();
         let max_ports = t.inputs.len().max(t.outputs.len());
@@ -252,6 +310,9 @@ impl TabInstance for VisualFlowCanvasTab {
 
     fn ui(&mut self, ui: &mut Ui, control: &mut Vec<AppCommand>) {
         self.process_async_io(control);
+
+        if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Z)) { self.undo(); }
+        if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Y)) { self.redo(); }
 
         egui::TopBottomPanel::top(ui.id().with("top_bar")).show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -376,7 +437,11 @@ impl TabInstance for VisualFlowCanvasTab {
                 if self.is_swiping {
                     if let Some(last) = self.swipe_last_pos {
                         let swipe_rect = Rect::from_two_pos(last, world_m_pos).expand(2.0);
+                        let mut changed = false;
+                        let old_node_count = self.nodes.len();
                         self.nodes.retain(|_, node| !swipe_rect.intersects(Rect::from_min_size(node.position, node.size)));
+                        if self.nodes.len() != old_node_count { changed = true; }
+
                         let mut to_remove = Vec::new();
                         for (i, conn) in self.connections.iter().enumerate() {
                             if !self.nodes.contains_key(&conn.from_node) || !self.nodes.contains_key(&conn.to_node) { to_remove.push(i); continue; }
@@ -384,6 +449,9 @@ impl TabInstance for VisualFlowCanvasTab {
                             let p2 = self.get_port_world_pos(conn.to_node, conn.to_port, false);
                             if Rect::from_two_pos(p1, p2).intersects(swipe_rect) { to_remove.push(i); }
                         }
+                        if !to_remove.is_empty() { changed = true; }
+                        if changed { self.push_undo(); }
+
                         for &i in to_remove.iter().rev() { self.connections.remove(i); }
                     }
                     self.swipe_last_pos = Some(world_m_pos);
@@ -399,6 +467,10 @@ impl TabInstance for VisualFlowCanvasTab {
             for conn in &self.connections {
                 let p1 = self.world_to_screen(self.get_port_world_pos(conn.from_node, conn.from_port, true), canvas_rect);
                 let p2 = self.world_to_screen(self.get_port_world_pos(conn.to_node, conn.to_port, false), canvas_rect);
+                
+                // 性能优化：连线裁剪
+                if !canvas_rect.intersects(Rect::from_two_pos(p1, p2).expand(20.0)) { continue; }
+
                 let mut color = Color32::WHITE;
                 if let Some(node) = self.nodes.get(&conn.from_node) {
                      if let Some(tmpl) = self.templates.iter().find(|t| t.name == node.template_name) {
@@ -437,6 +509,7 @@ impl TabInstance for VisualFlowCanvasTab {
                 if node_resp.clicked() { node_to_select = Some(id); }
                 if node_resp.drag_started() { node_to_drag = Some(id); node_to_select = Some(id); }
                 if node_resp.dragged() { drag_delta = node_resp.drag_delta(); }
+                if node_resp.drag_stopped() { self.push_undo(); }
                 
                 let h_rect = Rect::from_min_size(screen_pos, Vec2::new(screen_size.x, 24.0 * self.zoom));
                 painter.rect_filled(h_rect, Rounding { nw: 5.0 * self.zoom, ne: 5.0 * self.zoom, sw: 0.0, se: 0.0 }, self.get_category_color(&template.category));
@@ -444,15 +517,41 @@ impl TabInstance for VisualFlowCanvasTab {
 
                 let mut start_y_offset = 36.0;
                 // 2. 后处理 Widget 交互 (在背景之上，可以覆盖背景的输入)
+                let mut node_changed = false;
                 if let Some(w_type) = &template.widget_type {
                     let w_rect = Rect::from_min_size(screen_pos + Vec2::new(5.0, 29.0) * self.zoom, Vec2::new(screen_size.x - 10.0 * self.zoom, 20.0 * self.zoom));
                     if let Some(node) = self.nodes.get_mut(&id) {
-                        ui.allocate_ui_at_rect(w_rect, |ui| {
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(w_rect), |ui| {
                             match w_type.as_str() {
                                 "string_input" | "number_input" => {
-                                    ui.add(egui::TextEdit::singleline(&mut node.data)
+                                    if ui.add(egui::TextEdit::singleline(&mut node.data)
                                         .id_source(format!("edit_{}", id.0))
-                                        .desired_width(f32::INFINITY));
+                                        .desired_width(f32::INFINITY)).changed() { node_changed = true; }
+                                }
+                                "checkbox" => {
+                                    let mut checked = node.data == "true";
+                                    if ui.checkbox(&mut checked, "").changed() {
+                                        node.data = checked.to_string();
+                                        node_changed = true;
+                                    }
+                                }
+                                "dropdown" => {
+                                    // 预先提取数据避免借用冲突
+                                    let node_data_clone = node.data.clone();
+                                    let parts: Vec<&str> = node_data_clone.split('|').collect();
+                                    let current = parts.get(0).unwrap_or(&"").to_string();
+                                    let options_str = parts.get(1).unwrap_or(&"").to_string();
+                                    
+                                    egui::ComboBox::from_id_salt(id.0)
+                                        .selected_text(&current)
+                                        .show_ui(ui, |ui| {
+                                            for opt in options_str.split(',') {
+                                                let target_data = format!("{}|{}", opt, options_str);
+                                                if ui.selectable_value(&mut node.data, target_data, opt).changed() {
+                                                    node_changed = true;
+                                                }
+                                            }
+                                        });
                                 }
                                 _ => {}
                             }
@@ -460,6 +559,7 @@ impl TabInstance for VisualFlowCanvasTab {
                     }
                     start_y_offset += 25.0;
                 }
+                if node_changed { self.push_undo(); }
 
                 let row_h = 22.0 * self.zoom;
                 let start_y = screen_pos.y + start_y_offset * self.zoom;
@@ -514,7 +614,10 @@ impl TabInstance for VisualFlowCanvasTab {
             if ui.input(|i| i.pointer.any_released()) {
                 if let Some((sn, sp_idx)) = self.active_drag_source {
                     if let Some((dn, dp_idx, is_output)) = hover_port {
-                        if !is_output && sn != dn { self.connections.push(Connection { from_node: sn, from_port: sp_idx, to_node: dn, to_port: dp_idx }); }
+                        if !is_output && sn != dn { 
+                            self.push_undo();
+                            self.connections.push(Connection { from_node: sn, from_port: sp_idx, to_node: dn, to_port: dp_idx }); 
+                        }
                     }
                 }
                 if let Some(t) = self.dragged_template.take() { if canvas_rect.contains(m_pos) { self.add_node(&t.name, world_m_pos - Vec2::new(75.0, 10.0)); } }
@@ -534,6 +637,7 @@ impl TabInstance for VisualFlowCanvasTab {
                     egui::Frame::menu(ui.style()).show(ui, |ui| {
                         ui.set_width(120.0);
                         if ui.add_enabled(!self.selected_nodes.is_empty(), egui::Button::new("Delete")).clicked() {
+                            self.push_undo();
                             for id in self.selected_nodes.drain() { self.nodes.remove(&id); self.connections.retain(|c| c.from_node != id && c.to_node != id); }
                             close_menu = true;
                         }
@@ -580,7 +684,6 @@ impl NodeLoader {
         let content = std::fs::read_to_string(path).ok()?;
         match ext {
             "nhd" => Some(Self::parse_nhd(&content)),
-            "vfnode" => Some(Self::parse_vfnode(path.file_stem()?.to_str()?, &content)),
             _ => None
         }
     }
@@ -599,43 +702,10 @@ impl NodeLoader {
             inputs: d.inputs.into_iter().map(|p| Port { name: p.name, data_type: Self::map_t(&p.port_type) }).collect(),
             outputs: d.outputs.into_iter().map(|p| Port { name: p.name, data_type: Self::map_t(&p.port_type) }).collect(),
             rhai_fn_name: d.function_name,
-            rhai_body: String::new()
+            rhai_body: c.to_string() // 保存完整内容以供后续可能的动态调用
         }).collect()
     }
     fn map_t(t: &str) -> DataType { match t.to_lowercase().as_str() { "flow" => DataType::Flow, "string" => DataType::String, "number" | "int" => DataType::Number, "bool" => DataType::Bool, _ => DataType::Any } }
-    fn parse_vfnode(cat: &str, content: &str) -> Vec<NodeTemplate> {
-        let mut t = Vec::new(); let mut cb = Vec::new();
-        for l in content.lines() {
-            let l = l.trim();
-            if l.starts_with("///") { cb.push(l[3..].trim().to_string()); }
-            else if l.starts_with("fn ") {
-                let fn_name = match l.find('(') {
-                    Some(idx) => l[3..idx].trim().to_string(),
-                    None => continue,
-                };
-                let mut name = fn_name.clone(); let mut ins = Vec::new(); let mut outs = Vec::new(); let mut w = None;
-                for c in &cb {
-                    if let Some(v) = c.strip_prefix("@name:") { name = v.trim().to_string(); }
-                    else if let Some(v) = c.strip_prefix("@widget:") { w = Some(v.trim().to_string()); }
-                    else if let Some(v) = c.strip_prefix("@flow:") { 
-                        let p: Vec<&str> = v.split("->").collect();
-                        let ins_part = p[0].trim();
-                        if !ins_part.is_empty() { for s in ins_part.split(',') { ins.push(Port { name: s.trim().to_string(), data_type: DataType::Flow }); } }
-                        if p.len() > 1 {
-                            let outs_part = p[1].trim();
-                            if !outs_part.is_empty() { for s in outs_part.split(',') { outs.push(Port { name: s.trim().to_string(), data_type: DataType::Flow }); } }
-                        }
-                    }
-                    else if let Some(v) = c.strip_prefix("@in:") { Self::parse_p(v, &mut ins); }
-                    else if let Some(v) = c.strip_prefix("@out:") { Self::parse_p(v, &mut outs); }
-                }
-                t.push(NodeTemplate { name, category: cat.to_string(), widget_type: w, inputs: ins, outputs: outs, rhai_fn_name: fn_name, rhai_body: String::new() });
-                cb.clear();
-            }
-        }
-        t
-    }
-    fn parse_p(v: &str, target: &mut Vec<Port>) { for p in v.split(',') { if let Some(i) = p.find(':') { target.push(Port { name: p[..i].trim().to_string(), data_type: Self::map_t(p[i+1..].trim()) }); } } }
 }
 
 // ----------------------------------------------------------------------------
@@ -683,8 +753,8 @@ impl VisualFlowCanvasPlugin {
     fn reload(&mut self) {
         self.template_cache = NodeLoader::load_from_paths(&self.package_paths);
         if self.template_cache.is_empty() {
-            let core = "/// @name: Start\n/// @flow: -> out\nfn start() {}\n/// @name: If\n/// @flow: in -> t, f\n/// @in: cond: Bool\nfn branch(c) {}";
-            self.template_cache.extend(NodeLoader::parse_vfnode("Flow", core));
+            let core = "/*NHD_METADATA\nnamespace = \"Flow\"\n[[definitions]]\nname = \"Start\"\nfunction_name = \"start\"\ncategory = \"Core\"\noutputs = [{ name = \"next\", type = \"Flow\" }]\n[[definitions]]\nname = \"If\"\nfunction_name = \"branch\"\ncategory = \"Control\"\ninputs = [{ name = \"in\", type = \"Flow\" }, { name = \"condition\", type = \"Bool\" }]\noutputs = [{ name = \"true\", type = \"Flow\" }, { name = \"false\", type = \"Flow\" }]\nNHD_METADATA*/";
+            self.template_cache.extend(NodeLoader::parse_nhd(core));
         }
     }
 }

@@ -1,8 +1,0 @@
-/// @name: Start
-/// @flow: -> next
-fn start() {}
-
-/// @name: If
-/// @flow: in -> true, false
-/// @in: condition: Bool
-fn branch(condition) {}
