@@ -1,13 +1,26 @@
 /// @name: Print
+/// @flow: in -> out
 /// @in: msg: String
 fn print_log(msg) { print(msg); }
 
+/// @name: Log String
+/// @flow: in -> out
+/// @widget: string_input
+fn log_static(msg) { print(msg); }
+
+/// @name: String Literal
+/// @widget: string_input
+/// @out: val: String
+fn string_val() {}
+
 /// @name: Read File
+/// @flow: in -> out
 /// @in: path: String
 /// @out: content: String
 fn read_file(path) {}
 
 /// @name: Write File
+/// @flow: in -> out
 /// @in: path: String, content: String
 /// @out: success: Bool
 fn write_file(path, content) {}
